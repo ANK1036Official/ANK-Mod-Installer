@@ -1,0 +1,2 @@
+Tempdir/BepinEx/ -> %GamePath%/
+Tempdir/README.txt -> %GamePath%/README.txt
