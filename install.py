@@ -1,12 +1,10 @@
 import os
 import string
 import tkinter as tk
-import zstandard as zstd
 import shutil
 from tkinter import filedialog
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
-import tempfile
 from PIL import Image, ImageTk
 import threading
 
@@ -37,94 +35,32 @@ def search_steam_directories(game_folder, drives):
         if os.path.exists(potential_path):
             return potential_path
 
+        potential_path = os.path.join(drive, "SteamLibrary", steam_path_suffix, game_folder)
+        if os.path.exists(potential_path):
+            return potential_path
+
     return None
 
-def prompt_user_for_path():
-    root = tk.Tk()
-    root.withdraw()
-    folder_selected = filedialog.askdirectory()
+def prompt_user_for_path(root):
+    root.withdraw()  # Hide the main window
+    folder_selected = filedialog.askdirectory(parent=root)
+    root.deiconify()  # Show the main window again
     return folder_selected
 
-def decompress_zst_file(zst_file_path, output_path):
-    with open(zst_file_path, 'rb') as compressed:
-        dctx = zstd.ZstdDecompressor()
-        with open(output_path, 'wb') as destination:
-            dctx.copy_stream(compressed, destination)
-
-def process_mod_files(source_dir, dest_dir):
-    for root, dirs, files in os.walk(source_dir):
-
-        for dir in dirs:
-            source_sub_dir = os.path.join(root, dir)
-            dest_sub_dir = os.path.join(dest_dir, os.path.relpath(source_sub_dir, source_dir))
-            os.makedirs(dest_sub_dir, exist_ok=True)
-
-
-        for file in files:
-            file_path = os.path.join(root, file)
-            rel_path = os.path.relpath(file_path, source_dir)
-            dest_file_path = os.path.join(dest_dir, rel_path)
-
-            if file.endswith('.zst'):
-            
-                decompressed_file_path = os.path.splitext(dest_file_path)[0]
-                decompress_zst_file(file_path, decompressed_file_path)
-            else:
-            
-                shutil.copy(file_path, dest_file_path)
-
-
-
-def parse_extract_pointer(file_path, temp_dir, game_path):
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-
-    instructions = []
-    for line in lines:
-        if '->' in line:
-            src, dest = line.split('->')
-            src = os.path.join(temp_dir, src.strip().replace("Tempdir/", ""))
-            dest = dest.strip().replace("%GamePath%", game_path)
-            instructions.append((src, dest))
-
-    return instructions
-
-def move_files(instructions):
-    for src, dest in instructions:
-        if os.path.isdir(src):
-        
-            if not os.path.exists(dest):
-                os.makedirs(dest)
-
-        
-            for src_dir, dirs, files in os.walk(src):
-                dst_dir = src_dir.replace(src, dest, 1)
-                if not os.path.exists(dst_dir):
-                    os.makedirs(dst_dir)
-                for file in files:
-                    src_file = os.path.join(src_dir, file)
-                    dst_file = os.path.join(dst_dir, file)
-                    if os.path.exists(dst_file):
-                        os.remove(dst_file)
-                    shutil.copy(src_file, dst_dir)
-        else:
-            if not os.path.exists(os.path.dirname(dest)):
-                os.makedirs(os.path.dirname(dest))
-            shutil.copy(src, dest)
-
-
-def find_steam_game_path():
+def find_steam_game_path(root):
     game_folder = read_game_folder()
     if not game_folder:
+        print("Game folder not specified in gamefolder.txt.")
         return None
 
     drives = get_available_drives()
     game_path = search_steam_directories(game_folder, drives)
     if game_path:
+        print(f"Found game path: {game_path}")
         return game_path
     else:
-        print("Game folder not found in default directories. Please select the game folder.")
-        return prompt_user_for_path()
+        print("Game folder not found in default directories. Prompting user for path.")
+        return prompt_user_for_path(root)
 
 def play_midi(file_path):
     try:
@@ -135,27 +71,47 @@ def play_midi(file_path):
     except Exception as e:
         print(f"Error playing MIDI: {e}")
 
-def install_game(mod_files_dir, temp_dir, root, callback):
-    game_installation_path = find_steam_game_path()
-    if game_installation_path:
-        print(f"Game Installation Path: {game_installation_path}")
-        process_mod_files(mod_files_dir, temp_dir)
-        instructions = parse_extract_pointer("extract_pointer.txt", temp_dir, game_installation_path)
-        move_files(instructions)
-        callback()  # Call the callback function after installation
-        root.after(0, callback)
-    else:
-        print("Game installation path not found.")
+def copy_files(src, dest):
+    try:
+        if os.path.isdir(src):
+            shutil.copytree(src, dest, dirs_exist_ok=True)
+        elif os.path.isfile(src):
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(src, dest)
+    except Exception as e:
+        print(f"Error copying {src} to {dest}: {e}")
 
+def install_game(mod_files_dir, game_installation_path, callback):
+    if not game_installation_path:
+        print("Game installation path not found.")
+        return
+
+    print(f"Game Installation Path: {game_installation_path}")
+    try:
+        for item in os.listdir(mod_files_dir):
+            src = os.path.join(mod_files_dir, item)
+            dest = os.path.join(game_installation_path, item)
+            if os.path.isdir(src):
+                shutil.copytree(src, dest, dirs_exist_ok=True)
+            elif os.path.isfile(src):
+                shutil.copy2(src, dest)
+    except Exception as e:
+        print(f"Error during installation: {e}")
+    callback()
 
 def create_gui(mod_files_dir, midi_file_path, image_path):
+    root = tk.Tk()
+
     def on_install():
-        threading.Thread(target=install_game, args=(mod_files_dir, temp_dir, root, on_installation_complete), daemon=True).start()
+        game_installation_path = find_steam_game_path(root)
+        if game_installation_path:
+            threading.Thread(target=install_game, args=(mod_files_dir, game_installation_path, on_installation_complete), daemon=True).start()
+        else:
+            print("Unable to find the game installation path.")
 
     def on_installation_complete():
-
-        finish_button.pack(side=tk.LEFT, padx=10)
-        status_label.config(text="Installation Completed!")
+        img_label.pack_forget()  # Hide the image label
+        finish_button.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
     def on_finish():
         root.destroy()
@@ -169,10 +125,17 @@ def create_gui(mod_files_dir, midi_file_path, image_path):
     def on_volume_change(v):
         pygame.mixer.music.set_volume(float(v))
 
-    root = tk.Tk()
+    def on_close():
+        try:
+            pygame.mixer.music.stop()
+            pygame.mixer.quit()
+        except Exception as e:
+            print(f"Error stopping MIDI playback: {e}")
+        root.destroy()
+    
     root.title("ANK Mod Installer")
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.geometry("800x600")
-
 
     img = Image.open(image_path)
     img = img.resize((780, 500), Image.Resampling.LANCZOS)
@@ -181,6 +144,8 @@ def create_gui(mod_files_dir, midi_file_path, image_path):
     img_label.image = img_photo
     img_label.pack(pady=10)
 
+    finish_button = tk.Button(root, text="Finish", command=on_finish, font=("Helvetica", 20))
+    finish_button.config(height=20, width=50)  # Adjust size as needed
 
     button_frame = tk.Frame(root)
     button_frame.pack(side=tk.BOTTOM, pady=10)
@@ -201,8 +166,6 @@ def create_gui(mod_files_dir, midi_file_path, image_path):
     status_label = tk.Label(root, text="")
     status_label.pack(side=tk.BOTTOM, pady=10)
 
-    finish_button = tk.Button(root, text="Finish", command=on_finish)
-
     play_midi(midi_file_path)
 
     root.mainloop()
@@ -211,6 +174,4 @@ def create_gui(mod_files_dir, midi_file_path, image_path):
 mod_files_dir = 'modfiles'
 midi_file_path = 'music'
 image_path = 'installer_image'
-
-with tempfile.TemporaryDirectory() as temp_dir:
-    create_gui(mod_files_dir, midi_file_path, image_path)
+create_gui(mod_files_dir, midi_file_path, image_path)
